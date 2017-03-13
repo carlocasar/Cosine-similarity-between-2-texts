@@ -1,0 +1,475 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.0 Transitional//EN">
+<HTML><HEAD>
+
+<BODY>
+
+<H1><H1>CAIM, Session 2</H1></H1>
+
+<H1>Programming on Lucene</H1>
+
+<H2>0. Summary</H2>
+
+<P>In this session: 
+<UL>
+  <LI>We will learn about the basic Lucene classes, and, in particular, 
+      about those for reading, preprocessing, and indexing files.  
+  <LI>We will reprogram Lucene so that it applies a Porter stemmer and removes stopwords.
+  <LI>We'll study how these changes affect the terms that Lucene puts in the index, and
+      how this in turn affects searches.
+  <LI>We will complete a program to display documents in the tf-idf vector model.</LI>
+  <LI>We will compute document similarities with the cosine measure.</LI>
+</UL>
+
+<H2>1. Structure of Lucene </H2> 
+
+<p>
+In what follows, when we say <i>the user</i> we mean 
+the application programmer that uses Lucene's API to build his/her own program, 
+not the end user of the application that uses Lucene.</P>
+
+<P>
+The basic Lucene classes are: 
+</p>
+
+<UL>
+  <LI><I>Field</I>: It represents a feature of a document that the user wants to remember
+  in the index (such as name, path, date, size, contents, topic, owner...)
+  A field can be defined to be indexable or not, that is, whether it can be used in 
+  searches or not. The user can also specify whether a field should be <i>tokenized</i>;
+  typically, the file contents is the only tokenized Field.
+
+  <LI><I>Document</I>: Once the file has been indexed, it becomes a <i>Document</i> object, 
+  which is conceptually no more than a series of pairs <I>Field=value.</I>
+
+  <LI><I>Index</I>: A Lucene index is  conceptually a set of Document, those that the
+  user has indexed. A single Index object contains thus information about all the 
+  indexable fields of all the documents that it contains. Within an Index, each Document
+  receives a unique identifier, which is an integer number. 
+
+  <LI><I>Query</I>: An object that describes a query that the user applies to an Index. The result
+  will be a list of Document identifiers. After that, the user can retrieve additional information
+  about these Documents (such as their names) querying the Index with their identifiers.</LI>
+</UL>
+
+<p>
+Therefore, at any given time, an Index object contains information about a set of documents
+that will be later searched, and whose information is organized as sets of Fields.
+It is the user's choice to decide which are the fields of interest. In most applications of Lucene,
+the most interesting field contains the sequence or set of words in the file. 
+</P>
+
+<UL>
+  <LI><I>IndexWriter</I>: An IndexWriter object, after adequate parametrization, 
+  builds or modifies an existing Index. 
+
+  <LI><I>Analyzer</I>: An Analyzer object is one of the pieces that form an 
+  an IndexWriter. It reads a text file and produces a <I>TokenStream</I>. A <I>Token</I>
+  can be whatever the user chooses it to be, but is most normally a word 
+  that we want to store and possibly search later. An Analyzer applies to the
+  input text a <i>Tokenizer</i> and later a variable number of <i>TokenFilter</i>s. 
+  In pictures:
+
+<center>
+<img src="analyzer.gif" alt="Analyzer Structure">
+</center>
+
+  <LI>Intuitively, a Tokenizer reads the text file and chops it into Tokens, producing a 
+  <i>TokenStream</i>; 
+  a TokenFilter reads a TokenStream
+  and emits another TokenStream. The Tokenizer uses a <I>Reader</i>, an object that one opens, 
+  asks for chars repeatedly, and closes. 
+  (Warning: the truth is a bit more complex and interesting; more precise explanation later). 
+
+  <LI>As the name indicates, a TokenFilter may simply eat up undesired tokens (for example, 
+  words without meaning, punctuation signs, html tags that we don't want to index, etc.).
+  But it can also do other things, such as transforming the tokens or even add new tokens to the stream.
+  For example, if we program a stemmer we can add it to our Analyzer as a TokenFilter that
+  transforms each token in the TokenStream. The most basic Tokenizer provided by Lucene
+  works with plain text files. If we wanted to index files in other formats (pdf, Word, LaTeX, html...)
+  we should build a specific Tokenizer for each format. 
+
+  <LI><I>IndexSearcher</I>: Is used to query indices. The query becomes effective
+  by passing a Query object to the <I>IndexSearcher.search()</I> method.
+  This returns a <I>Hits</I> or <i>Topdocs</I> object (depending on the version), 
+  basically a Vector of Document identifiers, in order
+  of computed relevance of each document for the query.
+  Each IndexSearcher object can have an associated function to evaluate the relevance
+  of a Document for a Query. This function can be reprogrammed - 
+  more about this in session 3.
+
+  <LI><I>QueryParser</I>: This is a tool to generate Query objects from strings. 
+  For example, in the format defined by Lucene, QueryParser transforms the string 
+  "+Spielberg -Steven" into a query that, informally speaking, when applied to an Index, 
+  will return the documents that contain "Spielberg" but not "Steven". </LI>
+</UL>
+
+<p>
+Lucene provides one or more clases of each of these main classes, which can be
+considered as "defaut options". But almost everything can be reprogrammed 
+with more or less work. 
+</p>
+
+<p>
+[Here is the truth about Tokenizers and TokenFilters:
+Both are in fact subclasses of an abstract class <i>TokenStream</i>.
+A Tokenizer is defined to be a TokenStream that expects a text as input,
+and a TokenFilter is a TokenStream that expects (the output of) another TokenStream
+as input. This lets us chain one Tokenizer and an arbitrary number of TokenFilters. 
+
+Later we'll see how the different TokenStreams are invoked inside the code
+of an Analyzer. It will actually look as if each of these calls do read and write 
+a sequence of tokens, in a pipelined way, but this is not so. That code is just linking 
+the different TokenStream objects within the Analyzer, i.e., building the structure
+of the Analyzer as in the picture above. When the indexing really takes place,
+it will be the IndexWriter's job to actually call the TokenStream objects in the right order
+to process the tokens. 
+
+A very clever and beautiful application of Object Orientation, abstraction, and inheritance. ]
+</p>
+
+<H2>2. Changing the Lucene source</H2>
+
+In this session we will need to change the lucene source at a couple of points
+and run the modified version. There are at least two ways to do this:
+
+<ul>
+<li>If you are familiar with Eclipse, Netbeans, or a similar framework for managing Java projects,
+uncompress the lucene source archive, create a project with the resulting directory. You will then 
+be able to edit a Lucene class of your choice and run it, or a new class you want to create that you
+make part of the project and that calls lucene. You can either generate a new .jar, and run it from
+the command line, or run it from within the environment - in which case you will have to 
+provide the command line arguments such as <i>-docs</i> and <i>-index</i> for <i>IndexFiles</i>.
+<a href="http://www.lsi.upc.edu/~caim/lab/luceneEclipseNetbeans.txt">Instructions here.</a></li>
+</li>
+
+<li>If you want to do everything from the command line, one way to do it is: 
+<ol>
+<li> Uncompress the lucene source archive into a directory.</li>
+<li> Locate the java class whose behavior you want to modify:</li>
+(e.g. the SearchFiles or IndexFiles classes we used in the
+last session).
+<li> Now the tricky part: these classes will contain Java <i>package</i>
+clauses telling the java interpreter where they should be located. You will be creating a class 
+outside the lucene package (it will not be in the lucene-xxx.jar file), 
+so remove the package clauses.</li>
+<li> Even more tricky: suppose you will be modifying two lucene classes, IndexFiles
+and some Analyzer class. IndexFiles will use the Analyzer class. And it will
+contain an import clause of the form <i>import org.apache.lucene....Analyzer;</i>
+to tell the java compiler where to find this Analyzer class. But now you do not
+want to use that class in the lucene jar, but one you created yourself and 
+is outside lucene. So remove the import clauses for those you modify. We will
+tell the java inteprpreter from the outside (e.g., via classpath) where to 
+find the substitute classes you have created.</li>
+</ol>
+</ul>
+
+<H2>3. Looking into Lucene code</H2>
+
+<p>
+Recall that in the last session we wrote:</p>
+
+<p><i>
+% java org.apache.lucene.demo.IndexFiles dir
+</p></i>
+
+<p>
+to index the files in directory dir. We will change the <i>IndexFiles.java</i>
+so that it removes a set of stopwords and stems all terms before adding them to the
+index. 
+
+<ul>
+<li>Edit the class <i>org.apache.lucene.demo.IndexFiles</i>. 
+<li>Look where <i>IndexFiles</i> createx an <i>IndexWriter</i> object. Study the code fragment
+  where it is created and used. 
+<li>See how when creating an IndexWriter one specifies the desired Analyzer. 
+  In this case, it is <i>StandardAnalyzer</i>. 
+<li>Look for the code of <i>StandardAnalyzer.java</i> 
+   (which will be in the Lucene core, not in the Lucene demo).
+<li>Locate where it defines its Tokenizer and the TokenFilters it uses. 
+  Find out (using the Lucene API, or by looking into the source files) what these filters do. 
+</ul>
+
+<H2>4. Removing stopwords and adding a Porter stemmer</H2>
+
+<p>
+Download the <i>englishstop.txt</i> file from the homepage. It contains
+a rather long list of words that typically do not add much to searches, and 
+we want to avoid including in the index. 
+</p>
+
+<p>
+Look for the line that creates the Analyzer. It looks like: 
+</p>
+<pre><code>
+    Analyzer analyzer = new StandardAnalyzer(Version.LUCENE_31);
+</code></pre>
+<p>
+It uses a constructor with no parameters worth mentioning. 
+Go to the API, description of StandardAnalyzer. Look for that
+constructor. Now see that there's another constructor that
+has an additional Reader parameter from which to read a 
+stopword set. That's what we need. Change to e.g.:
+</p>
+<pre><code>
+    Analyzer analyzer = new StandardAnalyzer(Version.LUCENE_31,new FileReader("englishstop.txt"));
+</code></pre>
+<p>
+(maybe preceding the file name with the directory where you placed it). 
+You probably need to add the line 
+</p>
+
+<pre><code>
+import java.io.FileReader;
+</code></pre>
+
+<p>Let us now add a <i>PorterStemFilter</i> so that terms in the text are indexed.</p>
+
+<p>Locate Lucene's <i>PorterStemFilter.java</i> class. 
+You'll see that this TokenFilter uses a <i>PorterStemmer.java</i> class that implements 
+a Porter stemmer. 
+Note that this class has a <i>main()</i> method that allows calling it separately. 
+Try it: call its .class from the command line, giving it an argument file name: 
+</p>
+
+<p><i>
+% java org.apache.lucene.analysis.PorterStemmer file.txt
+</i></p>
+
+</p>
+You'll get as output the result of applying Porter's stemmer to <i>file.txt.</i>
+</p>
+
+<p>
+Now go to <i>StandardAnalyzer.java</i> and near the bottom you'll see the filters that StandarAnalyzer
+uses to digest the token stream it reads. It will look something like this: 
+</p>
+
+<pre><code>
+    ...    
+    TokenStream tok = new StandardFilter(matchVersion, src);
+    tok = new LowerCaseFilter(matchVersion, tok);
+    tok = new StopFilter(matchVersion, tok, stopwords);
+    ...
+</code></pre>
+
+<p>
+Import the following
+</p>
+<pre><code>
+import org.apache.lucene.analysis.standard.*;
+import org.apache.lucene.analysis.PorterStemFilter;
+</code></pre>
+<p>
+and ddd the stemmer at the end of the list, like this: 
+</p>
+
+<pre><code>
+    tok = new PorterStemFilter(tok);
+</code></pre>
+
+<p>
+We want to put this filter last because it requires lowercase terms, 
+and because stemming before removing the stopwords will give 
+incorrect results (think: why?).
+</p>
+
+<p>
+Now compile the classes you have modified. Keep the index for novels 
+that you had, and now run <i>IndexFiles</i> again to index the novels
+into another index with different name. 
+Use lukeall to look into this index and compare it to the one you had from before.
+In your report you must comment the differences you see. 
+</p>
+
+<p>
+Also, think what will happen if you now search for words that have been stemmed?
+If something undesired could happen, what should you do to solve it?
+(no need to do it, just a thought experiment). Comment your conclusion 
+in the report. 
+</p>
+
+<H2>5. Viewing documents in tf-idf format</H2>
+
+<p>This part of the session is to make sure we understand the tf-idf weight scheme for representing
+documents as vectors and the cosine similarity measure. 
+We will complete a program that does basically the following:</p>
+
+<pre><code>
+   while (true) {
+       1. read two filenames f1, f2;
+       2. get the document identifiers id1, id2 of the files f1 and f2 in the index; 
+       3. compute the tf-idf representation of id1, id2 as vectors v1, v2 (and print them);
+       4. compute the cosine similarity of v1, v2 (and print it);
+   }
+</code></pre>
+
+We will use an <i>IndexSearcher</i> object to search the index for the two files in step 2, 
+and an <i>IndexReader</i> object to obtain the relevant information (tf's and idf's) 
+from the index in step 3;
+Steps 1 and 4 do not require accessing the index. 
+
+<H2>6. Adding term frequencies to the index</H2>
+
+<p>First of all, we need to make sure that the index we build contains all the information
+required to compute tf-idf's, which is mainly frequencies of terms in documents.
+At least in some versions of Lucene, the IndexFiles.java class does not really store them 
+by default (to save space). With the program we are going to complete, if we use
+such an index we will get a "null pointer error" because we will ask Lucene
+to give us a certain TermFreqVector that is not there. 
+</p>
+<p>
+To solve this, we need to change IndexFiles.java as follows. Locate the line where 
+the "contents" field is added to the document that is being indexed. Will look roughly like this: 
+</p>
+
+<pre><code>
+    doc.add(new Field("contents",something-about-a-FileReader-or-BufferedReader));
+</code></pre>
+
+<p>
+and add the flag saying that the new Field should store TermVector information:
+</p>
+
+<pre><code>
+    doc.add(new Field("contents",something-about-a-FileReader-or-BufferedReader,Field.TermVector.YES));
+</code></pre>
+
+<p>Compile IndexFiles.java, then index the novels directory.</p>
+
+<H2>7. Computing tf-idf's and cosine measure</H2>
+
+<p>Get the classes <i>TfIdfViewer.java</i> and <i>TermWeight.java</i>. 
+TermWeight.java simply represents a pair (string,weight). 
+Have a look at it and compile it now. 
+TfIdfViewer.java is the (incomplete) program that implements 
+the pseudocode above. When it is complete we should call it as:
+</p>
+
+<p>
+<i>% java TfIdfViewer -index mydirectory
+</i></p>
+
+<p>
+and then enter pairs of filenames to display
+these files in tf-idf format and get their similarity. 
+The names should include the directory paths as they appear in the
+index (you can use lucene to view them). 
+</p>
+
+<p>Study the existing code:</p>
+
+<ul>
+<li> The main method parses the -index argument, creates IndexReader and IndexSearcher objects, 
+     then implements the code above by calling appropriate functions</li> 
+<li>The <i>findDocId</i> function creates a query to ask the index "give me the docid's of documents
+     in the index having this string in the 'path' field"</li> 
+<li> The <i>docFreq</i> function returns the number of documents in the index containing a given term 
+     in the 'contents' field. Note that a lucene <i>Term</i> is a pair (fieldname,string)</li> 
+<li>The (incomplete) <i>toTfIdf</i> function returns a vector of TermWeights 
+     representing the document with the given docid. It:
+       <ul>
+         <li>First gets a TermFreqVector with (essentially) pairs (Term,frequency-of-the-Term-in-the-doc).</li>
+         <li>Splits the TermFreqVector into two vectors, one of strings with the terms, the other with the corresponding
+             frequencies. IMPORTANT: Lucene guarantees that the vector of strings is sorted according to String.compareTo, the 
+             funny Java way for comparing strings. Recall that if x and y are strings, x.compareTo(y) returns a negative int 
+             if x goes before y (in dictionary order), a positive int if x goes after y, and 0 if x == y. </li>
+         <li>Gets the number of documents in the index.</li>
+         <li>Then finally creates every TermWeight entry of the vector to be returned.</li>
+       </ul> 
+       Your task is to complete the computations of the tf-idf value to fill this vector. 
+       You have all the ingredients ready, and only have to apply the formulas seen in class. 
+       </li> 
+<li>
+Function <i>normalize</i> should compute the norm of the vector (square root of the sums of 
+components squared) and divide the whole vector by it, so that the resulting vector has norm (length)
+1. Complete this function. You may want to use function <i>Math.sqrt</i>. 
+</li>
+<li>
+Function <i>printTermWeightVector</i> just prints one line for each entry in the given
+vector of the form (term,weight). Complete this function. 
+</li>
+<li>
+Function <i>cosineSimilarity</i> can be implemented by first normalizing both arguments, 
+then computing their inner product. Complete this function. 
+IMPORTANT: It must be an efficient implementation, with at most one scan 
+of each vector. Use strongly that the vectors are sorted by term, according to
+String.compareTo.
+</li>
+</ul>
+
+<H2>4. Experimenting</H2>
+
+<p>
+Once you are done with your program, try it out with the test collections 
+from the previous sessions. First, test your implementation by 
+computing the similarity of a file with itself (what should it give?).
+</p>
+
+<p>You may even want to create a very simple collection with
+two documents and three or four terms so that you can check by hand
+your implementation.
+</p>
+
+
+<H2>8. Deliverables</H2>
+
+<p>
+<i>To deliver:</i>
+Write a short report (2-3 pages max) with your results and thoughts.
+Pdf format is preferred. 
+Make sure it has your names, date, and title. 
+</p>
+<p>
+For the first part of the session, comment on the effects you observed
+on the index (size, number of terms etc). Avoid using <i>only</i> vague terms
+like "many", "a lot", etc. but also avoid giving too many numbers, tables, 
+screenshots, etc. and no conclusion.
+</p>
+<p>For the second part of the session, explain a) if you read and understood the 
+code that was provided, b) if you succeeded in implementing everything, 
+c) any major difficulties you found, and d) any observations 
+on your experiments or on what you learned this way. 
+</p>
+<p>
+You must also deliver all that classes that you modified (and only those).
+<i>Please mark with visible comments the parts where you made changes.</i>
+Pack everything in a .zip file. 
+</p>
+<p>You are welcome to add conclusions
+and thoughts that depart from what we asked you to do. In fact, they'll
+be highly valued if they are intelligent and show that you can go
+beyond following instructions literally.
+</p>
+<p>
+<i>Procedure:</i>
+Normally, use the tool in the Rac&oacute; called "Practiques via web". 
+In an emergency only, send by email to your instructor.  
+<p>
+
+<p>
+<i>Deadline:</i>
+Work must be delivered within 2 weeks from the lab session you attend, that
+is, before the second next lab session starts.
+Late deliveries risk being penalized or not accepted at all. 
+If you anticipate problems with the deadline, tell your instructor 
+as soon as possible. 
+</p>
+
+<p><i>Rules:</i>
+1. Assignments have to be solved in pairs, but each assignment must
+be solved with a different teammate (no two assignments by the same
+pair of people). We can make exceptions in reasoned cases, but you have
+to ask for permission <i>in advance</i>.
+2. Both members of the team have to post their (same) assignment in the Rac&oacute;.
+3. No plagiarism; don't discuss your work with others.
+If in doubt about what is allowed, ask us. 
+4. If you feel you are spending much more time than the rest of the group, 
+ask us for help. Questions can be asked either in person or by email, 
+and you'll never be penalized by asking questions, 
+no matter how stupid they look in retrospect.
+</p>
+
+<HR>
+<I>Last update: September 22nd, 2015</I>
+
+</P></BODY></HTML>
